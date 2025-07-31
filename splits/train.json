@@ -1,0 +1,14 @@
+{
+  "episodes": [
+    {
+      "support": {
+        "class_1": ["img_001.jpg", "img_002.jpg", "img_003.jpg", "img_004.jpg", "img_005.jpg"],
+        "class_2": ["img_006.jpg", "img_007.jpg", "img_008.jpg", "img_009.jpg", "img_010.jpg"]
+      },
+      "query": {
+        "class_1": ["img_011.jpg", "img_012.jpg"],
+        "class_2": ["img_013.jpg", "img_014.jpg"]
+      }
+    }
+  ]
+}
