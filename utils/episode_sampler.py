@@ -1,47 +1,44 @@
 import random
 from collections import defaultdict
+from torch.utils.data import Dataset
 
-def create_episode(data, n_way=5, k_shot=1, q_queries=5):
-    """
-    Creates a single few-shot learning episode.
+class FewShotEpisodeSampler(Dataset):
+    def __init__(self, data, n_way, k_shot, q_queries, episodes_per_epoch):
+        """
+        Args:
+            data: List of (image, label) tuples
+            n_way: Number of classes per episode
+            k_shot: Number of support examples per class
+            q_queries: Number of query examples per class
+            episodes_per_epoch: How many episodes per epoch
+        """
+        self.data = data
+        self.n_way = n_way
+        self.k_shot = k_shot
+        self.q_queries = q_queries
+        self.episodes_per_epoch = episodes_per_epoch
 
-    Args:
-        data (dict): Dictionary with class labels as keys and list of image paths as values.
-        n_way (int): Number of classes per episode.
-        k_shot (int): Number of support images per class.
-        q_queries (int): Number of query images per class.
+        self.label_to_indices = defaultdict(list)
+        for idx, (_, label) in enumerate(data):
+            self.label_to_indices[label].append(idx)
 
-    Returns:
-        dict: Episode with support and query sets.
-    """
-    selected_classes = random.sample(list(data.keys()), n_way)
+        self.labels = list(self.label_to_indices.keys())
 
-    support_set = []
-    query_set = []
+    def __len__(self):
+        return self.episodes_per_epoch
 
-    for cls in selected_classes:
-        samples = random.sample(data[cls], k_shot + q_queries)
-        support_set.extend([(s, cls) for s in samples[:k_shot]])
-        query_set.extend([(q, cls) for q in samples[k_shot:]])
+    def __getitem__(self, index):
+        selected_classes = random.sample(self.labels, self.n_way)
 
-    return {
-        "support": support_set,
-        "query": query_set,
-        "classes": selected_classes
-    }
+        support_set = []
+        query_set = []
 
-def group_images_by_class(image_paths, labels):
-    """
-    Organizes images by their class labels.
+        for cls in selected_classes:
+            indices = random.sample(self.label_to_indices[cls], self.k_shot + self.q_queries)
+            support_idxs = indices[:self.k_shot]
+            query_idxs = indices[self.k_shot:]
 
-    Args:
-        image_paths (list): List of image paths.
-        labels (list): Corresponding class labels.
+            support_set.extend(support_idxs)
+            query_set.extend(query_idxs)
 
-    Returns:
-        dict: Dictionary of class -> list of images
-    """
-    grouped = defaultdict(list)
-    for img, label in zip(image_paths, labels):
-        grouped[label].append(img)
-    return grouped
+        return support_set, query_set

@@ -1,22 +1,34 @@
+import torch
 import numpy as np
-from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 
-def compute_accuracy(y_true, y_pred):
+def compute_accuracy(preds, targets):
     """
-    Computes the classification accuracy.
+    Compute top-1 accuracy.
+    Args:
+        preds: Predicted logits or probabilities (Tensor)
+        targets: Ground truth labels (Tensor)
+    Returns:
+        accuracy: Float
     """
-    return accuracy_score(y_true, y_pred)
-
-def compute_confusion_matrix(y_true, y_pred, labels=None):
-    """
-    Computes the confusion matrix.
-    """
-    return confusion_matrix(y_true, y_pred, labels=labels)
-
-def top_k_accuracy(probs, targets, k=5):
-    """
-    Computes the Top-K accuracy.
-    """
-    top_k_preds = np.argsort(probs, axis=1)[:, -k:]
-    correct = sum([t in top_k for t, top_k in zip(targets, top_k_preds)])
+    pred_labels = torch.argmax(preds, dim=1)
+    correct = (pred_labels == targets).sum().item()
     return correct / len(targets)
+
+def compute_confusion(preds, targets):
+    """
+    Compute confusion matrix.
+    Returns:
+        np.ndarray
+    """
+    pred_labels = torch.argmax(preds, dim=1).cpu().numpy()
+    true_labels = targets.cpu().numpy()
+    return confusion_matrix(true_labels, pred_labels)
+
+def get_classification_report(preds, targets, target_names=None):
+    """
+    Returns classification report string.
+    """
+    pred_labels = torch.argmax(preds, dim=1).cpu().numpy()
+    true_labels = targets.cpu().numpy()
+    return classification_report(true_labels, pred_labels, target_names=target_names)
