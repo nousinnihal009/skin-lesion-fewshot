@@ -1,0 +1,6 @@
+[INFO] Training started - 2025-07-30 18:00:00
+[INFO] Episode 1 - Loss: 0.8712 - Accuracy: 75.0%
+[INFO] Episode 2 - Loss: 0.6945 - Accuracy: 81.2%
+[INFO] Episode 3 - Loss: 0.6338 - Accuracy: 85.0%
+...
+[INFO] Training complete - Best accuracy: 87.3%
