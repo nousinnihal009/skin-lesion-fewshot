@@ -1,44 +1,73 @@
-import argparse
+import os
 import torch
-from utils.data_loader import load_few_shot_test_set
+import gradio as gr
+from torchvision import transforms
+from PIL import Image
 from models.protonet import ProtoNet
 from utils.helpers import compute_prototypes, predict_class
+from utils.data_loader import load_image_tensor
 
-def run_demo(model_path, test_path, n_way=3, k_shot=5, query=5):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] Using device: {device}")
+# Load configuration
+MODEL_PATH = "models/protonet_best.pth"
+SUPPORT_PATH = "data/demo_support"
+N_WAY = 3
+K_SHOT = 5
 
-    print("[INFO] Loading few-shot test set...")
-    support_set, query_set, support_labels, query_labels = load_few_shot_test_set(
-        test_path, n_way=n_way, k_shot=k_shot, query=query
-    )
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print("[INFO] Loading model...")
-    model = ProtoNet().to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval()
+# Load model
+model = ProtoNet().to(device)
+model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+model.eval()
 
-    print("[INFO] Computing prototypes...")
-    support_embeddings = model(support_set.to(device))
+# Define preprocessing
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor()
+])
+
+# Load support set and compute prototypes
+def prepare_support():
+    support_images = []
+    support_labels = []
+    label_map = {}
+
+    label_folders = sorted(os.listdir(SUPPORT_PATH))
+    for idx, class_folder in enumerate(label_folders):
+        class_dir = os.path.join(SUPPORT_PATH, class_folder)
+        for img_file in os.listdir(class_dir)[:K_SHOT]:
+            img_path = os.path.join(class_dir, img_file)
+            image_tensor = load_image_tensor(img_path, transform=transform).unsqueeze(0)
+            support_images.append(image_tensor)
+            support_labels.append(torch.tensor(idx))
+        label_map[idx] = class_folder
+
+    support_images = torch.cat(support_images).to(device)
+    support_labels = torch.tensor(support_labels).to(device)
+    support_embeddings = model(support_images)
     prototypes = compute_prototypes(support_embeddings, support_labels)
 
-    print("[INFO] Running inference on query samples...")
-    query_embeddings = model(query_set.to(device))
-    predicted_labels = predict_class(prototypes, query_embeddings)
+    return prototypes, label_map
 
-    correct = (predicted_labels == query_labels.to(device)).sum().item()
-    total = len(query_labels)
-    accuracy = correct / total * 100
+prototypes, label_map = prepare_support()
 
-    print(f"[RESULT] Accuracy on few-shot test set: {accuracy:.2f}%")
+# Inference function
+def classify_query(image: Image.Image):
+    image_tensor = transform(image).unsqueeze(0).to(device)
+    with torch.no_grad():
+        embedding = model(image_tensor)
+        predicted_idx = predict_class(prototypes, embedding)[0].item()
+    return f"Predicted Class: {label_map[predicted_idx]}"
+
+# Gradio UI
+demo_ui = gr.Interface(
+    fn=classify_query,
+    inputs=gr.Image(type="pil"),
+    outputs="text",
+    title="Few-Shot Skin Lesion Classifier",
+    description="Upload a skin lesion image to classify it using few-shot learning (ProtoNet).",
+    theme="soft"
+)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, default="models/protonet_best.pth", help="Path to trained model")
-    parser.add_argument("--test_path", type=str, default="data/test", help="Path to few-shot test data")
-    parser.add_argument("--n_way", type=int, default=3, help="Number of classes (N-way)")
-    parser.add_argument("--k_shot", type=int, default=5, help="Number of shots per class (K-shot)")
-    parser.add_argument("--query", type=int, default=5, help="Number of query samples per class")
-    args = parser.parse_args()
-
-    run_demo(args.model_path, args.test_path, args.n_way, args.k_shot, args.query)
+    demo_ui.launch()
