@@ -1,0 +1,16 @@
+model:
+  checkpoint_path: models/protonet_best.pth
+
+data:
+  input_dir: demo/sample_images/
+  image_size: 224
+
+output:
+  save_predictions: true
+  predictions_path: demo/output/predictions.csv
+  save_visualizations: true
+  visualizations_dir: demo/output/visuals/
+
+logging:
+  verbose: true
+  log_path: demo/output/demo.log
