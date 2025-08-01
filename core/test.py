@@ -1,55 +1,61 @@
-# core/test.py
-
+import argparse
 import torch
-import yaml
-from torch.utils.data import DataLoader
-from utils.fewshot_dataset import FewShotDataset
-from utils.proto_net import PrototypicalNetwork
-from utils.sampler import EpisodicSampler
-from utils.metrics import compute_metrics, log_results
+import torch.nn.functional as F
+from sklearn.metrics import classification_report
 from tqdm import tqdm
 
-def load_config(path):
-    with open(path, 'r') as f:
-        return yaml.safe_load(f)
+from utils.data_loader import load_few_shot_test_set
+from models.protonet import ProtoNet
+from utils.helpers import compute_prototypes, predict_class
+from utils.logger import get_logger
 
-def evaluate(model, dataloader, device):
+
+def evaluate_few_shot_task(model, support_set, query_set, support_labels, query_labels, device):
     model.eval()
-    all_preds = []
-    all_labels = []
-
+    
     with torch.no_grad():
-        for support_images, support_labels, query_images, query_labels in tqdm(dataloader, desc="Testing"):
-            support_images = support_images.to(device)
-            query_images = query_images.to(device)
-            support_labels = support_labels.to(device)
+        support_embeddings = model(support_set.to(device))
+        query_embeddings = model(query_set.to(device))
+        prototypes = compute_prototypes(support_embeddings, support_labels)
+        predictions = predict_class(prototypes, query_embeddings)
 
-            output = model(support_images, support_labels, query_images)
-            pred = torch.argmax(output, dim=1)
+    correct = (predictions == query_labels.to(device)).sum().item()
+    total = len(query_labels)
+    acc = correct / total * 100
 
-            all_preds.extend(pred.cpu().numpy())
-            all_labels.extend(query_labels.numpy())
+    report = classification_report(query_labels.cpu(), predictions.cpu(), output_dict=True)
+    return acc, report
 
-    return all_preds, all_labels
 
-def main():
-    config = load_config("config/config.yaml")
-    device = torch.device(config['experiment']['device'])
+def main(args):
+    logger = get_logger("test")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
 
-    dataset = FewShotDataset(config['dataset'], split="test")
-    sampler = EpisodicSampler(dataset, config['fewshot'])
-    dataloader = DataLoader(dataset, batch_size=config['test']['batch_size'], sampler=sampler)
+    logger.info("Loading test set...")
+    support_set, query_set, support_labels, query_labels = load_few_shot_test_set(
+        args.test_path, n_way=args.n_way, k_shot=args.k_shot, query=args.query
+    )
 
-    model = PrototypicalNetwork().to(device)
-    model.load_state_dict(torch.load(config['train']['save_path'], map_location=device))
+    logger.info("Loading model...")
+    model = ProtoNet(backbone=args.backbone).to(device)
+    model.load_state_dict(torch.load(args.model_path, map_location=device))
 
-    preds, labels = evaluate(model, dataloader, device)
-    results = compute_metrics(labels, preds)
-    log_results(results, "results/test_metrics.json")
+    logger.info("Evaluating few-shot task...")
+    acc, report = evaluate_few_shot_task(model, support_set, query_set, support_labels, query_labels, device)
 
-    print("Test Metrics:")
-    for k, v in results.items():
-        print(f"{k}: {v:.4f}")
+    logger.info(f"[RESULT] Few-shot classification accuracy: {acc:.2f}%")
+    logger.info(f"[METRICS] Classification Report:\n{classification_report(query_labels.cpu(), predict_class(compute_prototypes(model(support_set.to(device)), support_labels), model(query_set.to(device))).cpu())}")
+
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Few-Shot Skin Lesion Classification Evaluation")
+    parser.add_argument("--model_path", type=str, default="models/protonet_best.pth")
+    parser.add_argument("--test_path", type=str, default="data/test")
+    parser.add_argument("--n_way", type=int, default=3)
+    parser.add_argument("--k_shot", type=int, default=5)
+    parser.add_argument("--query", type=int, default=5)
+    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50", "convnet"])
+    args = parser.parse_args()
+
+    main(args)
