@@ -1,83 +1,104 @@
-# core/train.py
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-import yaml
 import os
-import random
+import torch
+import logging
 import numpy as np
-from utils.fewshot_dataset import FewShotDataset
-from utils.proto_net import PrototypicalNetwork
-from utils.sampler import EpisodicSampler
-from utils.metrics import compute_metrics, log_results
-from utils.visualizer import plot_loss_curve
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
+from utils.data_loader import get_few_shot_dataloader
+from utils.helpers import compute_prototypes, compute_loss, accuracy
+from models.protonet import ProtoNet
+from utils.early_stopper import EarlyStopper
+from utils.metrics import FewShotMetrics
+from utils.config_parser import load_config
 
-def set_seed(seed):
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
-def load_config(path):
-    with open(path, 'r') as f:
-        return yaml.safe_load(f)
+def train(config_path):
+    # Load Config
+    config = load_config(config_path)
 
-def train_one_episode(model, data, optimizer, criterion, device):
-    support_images, support_labels, query_images, query_labels = data
-    support_images = support_images.to(device)
-    query_images = query_images.to(device)
-    support_labels = support_labels.to(device)
-    query_labels = query_labels.to(device)
+    # Setup
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    os.makedirs(config['train']['checkpoint_dir'], exist_ok=True)
+    writer = SummaryWriter(log_dir=config['train']['log_dir'])
+    logging.basicConfig(level=logging.INFO)
 
-    model.train()
-    optimizer.zero_grad()
-    output = model(support_images, support_labels, query_images)
-    loss = criterion(output, query_labels)
-    loss.backward()
-    optimizer.step()
+    # Load Dataloader
+    train_loader, val_loader = get_few_shot_dataloader(
+        config['data']['train_path'],
+        config['data']['val_path'],
+        n_way=config['fewshot']['n_way'],
+        k_shot=config['fewshot']['k_shot'],
+        query=config['fewshot']['query'],
+        episodes=config['train']['episodes'],
+        num_workers=config['train']['num_workers']
+    )
 
-    pred = torch.argmax(output, dim=1)
-    acc = (pred == query_labels).float().mean().item()
+    # Initialize Model
+    model = ProtoNet().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['train']['lr'])
+    stopper = EarlyStopper(patience=config['train']['patience'])
 
-    return loss.item(), acc
+    metrics = FewShotMetrics()
 
-def main():
-    config = load_config("config/config.yaml")
-    set_seed(config['experiment']['seed'])
+    # Training Loop
+    for episode in tqdm(range(config['train']['episodes']), desc="Training Episodes"):
+        model.train()
+        support_set, query_set, support_labels, query_labels = next(iter(train_loader))
+        support_set, query_set = support_set.to(device), query_set.to(device)
+        support_labels, query_labels = support_labels.to(device), query_labels.to(device)
 
-    device = torch.device(config['experiment']['device'])
-    dataset = FewShotDataset(config['dataset'])
-    sampler = EpisodicSampler(dataset, config['fewshot'])
-    dataloader = DataLoader(dataset, batch_size=config['train']['batch_size'], sampler=sampler)
+        optimizer.zero_grad()
+        support_embeddings = model(support_set)
+        query_embeddings = model(query_set)
 
-    model = PrototypicalNetwork().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=config['train']['lr'], weight_decay=config['train']['weight_decay'])
-    criterion = nn.CrossEntropyLoss()
+        prototypes = compute_prototypes(support_embeddings, support_labels)
+        loss, logits = compute_loss(prototypes, query_embeddings, query_labels)
+        acc = accuracy(logits, query_labels)
 
-    all_losses = []
-    for epoch in range(config['train']['epochs']):
-        epoch_loss = 0
-        epoch_acc = 0
-        loop = tqdm(dataloader, total=len(dataloader), desc=f"Epoch {epoch+1}")
-        for episode_data in loop:
-            loss, acc = train_one_episode(model, episode_data, optimizer, criterion, device)
-            epoch_loss += loss
-            epoch_acc += acc
-            loop.set_postfix(loss=loss, acc=acc)
+        loss.backward()
+        optimizer.step()
 
-        avg_loss = epoch_loss / len(dataloader)
-        avg_acc = epoch_acc / len(dataloader)
-        all_losses.append(avg_loss)
+        writer.add_scalar("Train/Loss", loss.item(), episode)
+        writer.add_scalar("Train/Accuracy", acc, episode)
 
-        print(f"Epoch {epoch+1} Summary: Loss={avg_loss:.4f} | Accuracy={avg_acc:.4f}")
+        if episode % config['train']['val_interval'] == 0:
+            model.eval()
+            val_loss_list, val_acc_list = [], []
+            with torch.no_grad():
+                for val_support, val_query, val_s_labels, val_q_labels in val_loader:
+                    val_support, val_query = val_support.to(device), val_query.to(device)
+                    val_s_labels, val_q_labels = val_s_labels.to(device), val_q_labels.to(device)
 
-    os.makedirs(os.path.dirname(config['train']['save_path']), exist_ok=True)
-    torch.save(model.state_dict(), config['train']['save_path'])
-    plot_loss_curve(all_losses, save_path="results/loss_curve.png")
+                    val_support_embeddings = model(val_support)
+                    val_query_embeddings = model(val_query)
+                    val_prototypes = compute_prototypes(val_support_embeddings, val_s_labels)
+
+                    val_loss, val_logits = compute_loss(val_prototypes, val_query_embeddings, val_q_labels)
+                    val_acc = accuracy(val_logits, val_q_labels)
+
+                    val_loss_list.append(val_loss.item())
+                    val_acc_list.append(val_acc)
+
+                val_loss_mean = np.mean(val_loss_list)
+                val_acc_mean = np.mean(val_acc_list)
+                writer.add_scalar("Val/Loss", val_loss_mean, episode)
+                writer.add_scalar("Val/Accuracy", val_acc_mean, episode)
+
+                logging.info(f"Episode {episode}: Val Loss = {val_loss_mean:.4f}, Val Acc = {val_acc_mean:.2f}%")
+
+                if stopper.early_stop(val_loss_mean):
+                    logging.info("[STOP] Early stopping triggered.")
+                    break
+
+    # Save Model
+    torch.save(model.state_dict(), os.path.join(config['train']['checkpoint_dir'], 'protonet_best.pth'))
+    logging.info("[DONE] Model saved.")
+    writer.close()
+
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="config/config.yaml", help="Path to config file")
+    args = parser.parse_args()
+    train(args.config)
