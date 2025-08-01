@@ -1,52 +1,69 @@
 # core/inference.py
 
-import torch
-import yaml
-from torchvision import transforms
-from PIL import Image
-from utils.proto_net import PrototypicalNetwork
-from utils.helpers import prepare_single_episode
 import os
+import torch
+import argparse
+import logging
+from utils.data_loader import load_few_shot_test_set
+from utils.helpers import compute_prototypes, predict_class
+from models.protonet import ProtoNet
+from utils.metrics import compute_classification_metrics
 
-def load_config(path):
-    with open(path, 'r') as f:
-        return yaml.safe_load(f)
+def setup_logger():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
 
-def infer(model, image_path, support_set, device):
+def load_model(model_path, device):
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+    
+    model = ProtoNet().to(device)
+    state_dict = torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict)
     model.eval()
+    logging.info(f"Loaded model from {model_path}")
+    return model
 
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor()
-    ])
-
-    query_image = transform(Image.open(image_path).convert("RGB")).unsqueeze(0).to(device)
-    support_images, support_labels = prepare_single_episode(support_set, transform, device)
-
+def run_inference(model, support_set, support_labels, query_set, query_labels, device):
     with torch.no_grad():
-        output = model(support_images, support_labels, query_image)
-        pred = torch.argmax(output, dim=1).item()
+        support_embeddings = model(support_set.to(device))
+        query_embeddings = model(query_set.to(device))
 
-    return pred
+        prototypes = compute_prototypes(support_embeddings, support_labels)
+        predicted_labels = predict_class(prototypes, query_embeddings)
 
-def main():
-    config = load_config("config/config.yaml")
-    device = torch.device(config['experiment']['device'])
+        acc, prec, rec, f1 = compute_classification_metrics(
+            predicted_labels.cpu(), query_labels.cpu()
+        )
 
-    model = PrototypicalNetwork().to(device)
-    model.load_state_dict(torch.load(config['train']['save_path'], map_location=device))
+        logging.info(f"[RESULT] Accuracy: {acc:.2f}%")
+        logging.info(f"[RESULT] Precision: {prec:.2f}%")
+        logging.info(f"[RESULT] Recall: {rec:.2f}%")
+        logging.info(f"[RESULT] F1 Score: {f1:.2f}%")
 
-    image_path = config['demo']['sample_image']
-    support_set = [
-        ("data/class1/img1.jpg", 0),
-        ("data/class1/img2.jpg", 0),
-        ("data/class2/img1.jpg", 1),
-        ("data/class2/img2.jpg", 1),
-        # Add more support samples as needed
-    ]
+    return predicted_labels
 
-    pred_class = infer(model, image_path, support_set, device)
-    print(f"Predicted class index: {pred_class}")
+def main(args):
+    setup_logger()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logging.info(f"Using device: {device}")
+
+    support_set, query_set, support_labels, query_labels = load_few_shot_test_set(
+        args.test_path, args.n_way, args.k_shot, args.query
+    )
+
+    model = load_model(args.model_path, device)
+    run_inference(model, support_set, support_labels, query_set, query_labels, device)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Inference for Few-Shot Skin Lesion Classification")
+    parser.add_argument("--model_path", type=str, default="models/protonet_best.pth", help="Path to trained model checkpoint")
+    parser.add_argument("--test_path", type=str, default="data/test", help="Path to few-shot formatted test dataset")
+    parser.add_argument("--n_way", type=int, default=5, help="Number of classes for N-way classification")
+    parser.add_argument("--k_shot", type=int, default=5, help="Number of support samples per class (K-shot)")
+    parser.add_argument("--query", type=int, default=5, help="Number of query samples per class")
+    
+    args = parser.parse_args()
+    main(args)
