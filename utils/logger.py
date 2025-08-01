@@ -1,29 +1,24 @@
 import logging
 import os
 
-def setup_logger(log_dir, log_name="train_log.txt"):
+
+def get_logger(name="default_logger", log_dir="logs", log_file="train.log"):
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, log_name)
+    log_path = os.path.join(log_dir, log_file)
 
-    logger = logging.getLogger('fewshot')
-    logger.setLevel(logging.DEBUG)
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
 
-    # Clear existing handlers
-    if logger.hasHandlers():
-        logger.handlers.clear()
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-    # Console handler
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')
-    ch.setFormatter(formatter)
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setFormatter(formatter)
 
-    # File handler
-    fh = logging.FileHandler(log_path)
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(formatter)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
 
-    logger.addHandler(ch)
-    logger.addHandler(fh)
+    if not logger.handlers:
+        logger.addHandler(file_handler)
+        logger.addHandler(stream_handler)
 
     return logger
