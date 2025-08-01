@@ -1,56 +1,52 @@
-# Configuration for Few-Shot Skin Lesion Classification
-experiment_name: "protonet_skinlesion_fewshot"
+project:
+  name: Skin Lesion Few-Shot Classification
+  author: nousin nihal
+  description: Few-Shot Learning for Rare Skin Lesions using Prototypical Networks
 
-device: "cuda"  # or "cpu"
-
-seed: 42
-
-dataset:
-  name: "ISIC2019"
-  root_dir: "data/"
+data:
+  train_path: data/ISIC2019/train
+  val_path: data/ISIC2019/val
+  test_path: data/ISIC2019/test
   image_size: 224
-  augmentations: true
-  normalize: true
+  augment:
+    horizontal_flip: true
+    vertical_flip: true
+    brightness_contrast: true
+    shift_scale_rotate: true
+    blur: true
+    noise: true
+    cutout: true
+    random_crop: false
+    coarse_dropout: false
+    elastic_transform: false
+    normalize_mean: [0.485, 0.456, 0.406]
+    normalize_std: [0.229, 0.224, 0.225]
 
-few_shot:
+fewshot:
   n_way: 5
   k_shot: 5
-  query_per_class: 5
-  val_episodes: 100
-  test_episodes: 200
+  query: 15
 
-training:
-  epochs: 100
-  batch_size: 1  # one episode per batch
-  optimizer: "Adam"
-  learning_rate: 1e-3
-  weight_decay: 1e-5
-  scheduler: "StepLR"
-  step_size: 20
-  gamma: 0.5
-  early_stopping_patience: 15
+train:
+  episodes: 1000
+  batch_size: 16
+  lr: 0.0005
+  patience: 20
+  val_interval: 25
+  num_workers: 4
+  checkpoint_dir: models/checkpoints
+  log_dir: results/logs
 
-model:
-  type: "ProtoNet"
-  backbone: "resnet18"
-  pretrained: true
-  embedding_dim: 512
+test:
+  checkpoint_path: models/checkpoints/protonet_best.pth
+  save_predictions: false  # set true if saving CSVs
+  prediction_path: results/predictions.csv
 
-logging:
-  log_dir: "results/logs/"
-  tensorboard: true
-  log_frequency: 10
-  save_best_only: true
+demo:
+  classes_path: demo/sample_classes  # for gradio demo mode
+  output_dir: results/demo_outputs
+  model_checkpoint: models/checkpoints/protonet_best.pth
 
-checkpoint:
-  save_dir: "models/"
-  save_name: "protonet_best.pth"
-  resume_from: null  # or "models/protonet_last.pth"
-
-  notifier:
-  email_sender: "you@example.com"
-  email_receiver: "admin@example.com"
-  email_password: "your-app-password"
-  smtp_server: "smtp.gmail.com"
-  smtp_port: 465
-
+inference:
+  use_gpu: true
+  confidence_threshold: 0.5
