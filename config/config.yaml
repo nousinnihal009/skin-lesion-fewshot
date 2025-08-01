@@ -1,39 +1,48 @@
-# config/config.yaml
+# Configuration for Few-Shot Skin Lesion Classification
+experiment_name: "protonet_skinlesion_fewshot"
 
-# Experiment Settings
-experiment:
-  name: "fewshot_skin_lesion"
-  seed: 42
-  device: "cuda"  # or "cpu"
+device: "cuda"  # or "cpu"
 
-# Few-Shot Settings
-fewshot:
-  n_way: 5        # Number of classes per episode
-  k_shot: 5       # Number of support samples per class
-  n_query: 15     # Number of query samples per class
-  n_episodes: 100 # Episodes per epoch
+seed: 42
 
-# Dataset Settings
 dataset:
   name: "ISIC2019"
-  data_path: "data/"
-  splits_path: "splits/"
-  input_size: 224
+  root_dir: "data/"
+  image_size: 224
+  augmentations: true
+  normalize: true
 
-# Training Settings
-train:
-  epochs: 50
-  batch_size: 1
-  lr: 0.001
-  weight_decay: 0.0001
-  save_path: "models/proto_model.pth"
-  log_path: "results/train_logs.csv"
+few_shot:
+  n_way: 5
+  k_shot: 5
+  query_per_class: 5
+  val_episodes: 100
+  test_episodes: 200
 
-# Testing / Inference
-test:
-  checkpoint: "models/proto_model.pth"
-  save_results: "results/test_results.csv"
+training:
+  epochs: 100
+  batch_size: 1  # one episode per batch
+  optimizer: "Adam"
+  learning_rate: 1e-3
+  weight_decay: 1e-5
+  scheduler: "StepLR"
+  step_size: 20
+  gamma: 0.5
+  early_stopping_patience: 15
 
-# Demo
-demo:
-  sample_image: "demo_images/sample.jpg"
+model:
+  type: "ProtoNet"
+  backbone: "resnet18"
+  pretrained: true
+  embedding_dim: 512
+
+logging:
+  log_dir: "results/logs/"
+  tensorboard: true
+  log_frequency: 10
+  save_best_only: true
+
+checkpoint:
+  save_dir: "models/"
+  save_name: "protonet_best.pth"
+  resume_from: null  # or "models/protonet_last.pth"
