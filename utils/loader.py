@@ -1,44 +1,68 @@
 import os
-import torch
+import random
 from PIL import Image
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from torch.utils.data import Dataset
-from sklearn.preprocessing import LabelEncoder
+import numpy as np
+import torch
+from utils.sampler import FewShotSampler
+from utils.augmentation import get_training_augmentation, get_validation_augmentation
 
 
-class ISICDataset(Dataset):
-    """
-    Custom Dataset for ISIC images used in Few-Shot Learning.
-    Automatically handles label encoding and transforms.
-    """
-    def __init__(self, image_dir, transform=None):
-        self.image_dir = image_dir
-        self.transform = transform or transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5], std=[0.5])
-        ])
-
-        self.image_paths = []
-        self.labels = []
-
-        for class_name in sorted(os.listdir(image_dir)):
-            class_path = os.path.join(image_dir, class_name)
-            if os.path.isdir(class_path):
-                for img_name in os.listdir(class_path):
-                    if img_name.endswith(('.png', '.jpg', '.jpeg')):
-                        self.image_paths.append(os.path.join(class_path, img_name))
-                        self.labels.append(class_name)
-
-        self.encoder = LabelEncoder()
-        self.encoded_labels = self.encoder.fit_transform(self.labels)
+class SkinLesionDataset(Dataset):
+    def __init__(self, image_paths, labels, transform=None):
+        self.image_paths = image_paths
+        self.labels = labels
+        self.transform = transform
 
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
-        image_path = self.image_paths[idx]
-        label = self.encoded_labels[idx]
-        image = Image.open(image_path).convert("RGB")
-        image = self.transform(image)
-        return image, torch.tensor(label), self.labels[idx]  # include human-readable class
+        img = np.array(Image.open(self.image_paths[idx]).convert("RGB"))
+        label = self.labels[idx]
+        if self.transform:
+            img = self.transform(image=img)["image"]
+        return img, label
+
+
+def load_data_from_directory(data_dir):
+    image_paths, labels = [], []
+    label_map = {label: idx for idx, label in enumerate(sorted(os.listdir(data_dir)))}
+
+    for label in os.listdir(data_dir):
+        class_dir = os.path.join(data_dir, label)
+        if not os.path.isdir(class_dir):
+            continue
+        for img_file in os.listdir(class_dir):
+            if img_file.endswith(('.jpg', '.png', '.jpeg')):
+                image_paths.append(os.path.join(class_dir, img_file))
+                labels.append(label_map[label])
+    return image_paths, labels
+
+
+def get_few_shot_dataloader(
+    train_dir, val_dir, n_way, k_shot, query, episodes, num_workers=4, image_size=224
+):
+    train_paths, train_labels = load_data_from_directory(train_dir)
+    val_paths, val_labels = load_data_from_directory(val_dir)
+
+    train_transform = get_training_augmentation(image_size=image_size)
+    val_transform = get_validation_augmentation(image_size=image_size)
+
+    train_dataset = SkinLesionDataset(train_paths, train_labels, transform=train_transform)
+    val_dataset = SkinLesionDataset(val_paths, val_labels, transform=val_transform)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_sampler=FewShotSampler(train_labels, n_way, k_shot, query, episodes),
+        num_workers=num_workers
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_sampler=FewShotSampler(val_labels, n_way, k_shot, query, episodes),
+        num_workers=num_workers
+    )
+
+    return train_loader, val_loader
