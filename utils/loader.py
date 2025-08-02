@@ -7,7 +7,8 @@ import numpy as np
 import torch
 from utils.sampler import FewShotSampler
 from utils.augmentation import get_training_augmentation, get_validation_augmentation
-
+import json
+from utils.augmentation import get_validation_augmentation
 
 class SkinLesionDataset(Dataset):
     def __init__(self, image_paths, labels, transform=None):
@@ -66,3 +67,41 @@ def get_few_shot_dataloader(
     )
 
     return train_loader, val_loader
+
+def load_episode_from_json(json_path, image_size=224):
+    with open(json_path, 'r') as f:
+        episode_data = json.load(f)
+
+    transform = get_validation_augmentation(image_size=image_size)
+    episodes = []
+
+    for ep in episode_data['episodes']:
+        support_images, support_labels = [], []
+        query_images, query_labels = [], []
+
+        label_map = {cls: idx for idx, cls in enumerate(ep['classes'])}
+
+        for cls in ep['support']:
+            for img_path in ep['support'][cls]:
+                img = np.array(Image.open(img_path).convert("RGB"))
+                img = transform(image=img)["image"]
+                support_images.append(img)
+                support_labels.append(label_map[cls])
+
+        for cls in ep['query']:
+            for img_path in ep['query'][cls]:
+                img = np.array(Image.open(img_path).convert("RGB"))
+                img = transform(image=img)["image"]
+                query_images.append(img)
+                query_labels.append(label_map[cls])
+
+        episode = {
+            'support_images': torch.stack(support_images),
+            'query_images': torch.stack(query_images),
+            'support_labels': torch.tensor(support_labels),
+            'query_labels': torch.tensor(query_labels),
+        }
+
+        episodes.append(episode)
+
+    return episodes
