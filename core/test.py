@@ -1,92 +1,93 @@
 import argparse
-import torch
 import os
+import torch
 import numpy as np
-from PIL import Image
+import json
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 
 from models.protonet import ProtoNet
 from utils.helpers import compute_prototypes, predict_class
-from utils.augmentation import get_validation_augmentation
 from utils.config_parser import load_config
+from utils.loader import load_episode_from_json
+from utils.profiling import log_gpu_memory
 
 
-def load_test_data(root_dir, n_way, k_shot, query, image_size=224):
-    transform = get_validation_augmentation(image_size=image_size)
-    support_set, query_set = [], []
-    support_labels, query_labels = [], []
+def evaluate_episode(model, device, episode):
+    support_set = episode['support_images'].to(device)
+    query_set = episode['query_images'].to(device)
+    support_labels = episode['support_labels'].to(device)
+    query_labels = episode['query_labels'].to(device)
 
-    class_folders = sorted(os.listdir(root_dir))[:n_way]
-    label_map = {cls: idx for idx, cls in enumerate(class_folders)}
+    with torch.no_grad():
+        support_embeddings = model(support_set)
+        query_embeddings = model(query_set)
 
-    for cls in class_folders:
-        cls_path = os.path.join(root_dir, cls)
-        all_images = sorted([
-            os.path.join(cls_path, img) for img in os.listdir(cls_path)
-            if img.lower().endswith(('.jpg', '.jpeg', '.png'))
-        ])
-        selected = all_images[:k_shot + query]
-        support_imgs = selected[:k_shot]
-        query_imgs = selected[k_shot:k_shot + query]
+        prototypes = compute_prototypes(support_embeddings, support_labels)
+        predictions = predict_class(prototypes, query_embeddings)
 
-        for img_path in support_imgs:
-            img = np.array(Image.open(img_path).convert("RGB"))
-            tensor_img = transform(image=img)["image"]
-            support_set.append(tensor_img)
-            support_labels.append(label_map[cls])
+    acc = accuracy_score(query_labels.cpu(), predictions.cpu()) * 100
+    f1 = f1_score(query_labels.cpu(), predictions.cpu(), average='macro') * 100
 
-        for img_path in query_imgs:
-            img = np.array(Image.open(img_path).convert("RGB"))
-            tensor_img = transform(image=img)["image"]
-            query_set.append(tensor_img)
-            query_labels.append(label_map[cls])
-
-    support_set = torch.stack(support_set)
-    query_set = torch.stack(query_set)
-    support_labels = torch.tensor(support_labels)
-    query_labels = torch.tensor(query_labels)
-
-    return support_set, query_set, support_labels, query_labels
+    return acc, f1, query_labels.cpu().numpy(), predictions.cpu().numpy()
 
 
 def test(config_path):
     config = load_config(config_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print("[INFO] Loading model...")
+    # Load model
     model = ProtoNet().to(device)
-    model.load_state_dict(torch.load(config['test']['checkpoint_path'], map_location=device))
+    checkpoint = torch.load(config['test']['checkpoint_path'], map_location=device)
+    model.load_state_dict(checkpoint)
     model.eval()
 
-    print("[INFO] Preparing test set...")
-    support_set, query_set, support_labels, query_labels = load_test_data(
-        config['data']['test_path'],
-        n_way=config['fewshot']['n_way'],
-        k_shot=config['fewshot']['k_shot'],
-        query=config['fewshot']['query'],
+    # Load test episodes from JSON
+    print("[INFO] Loading test episodes...")
+    test_episodes = load_episode_from_json(
+        config['test']['episode_json'],
         image_size=config['data'].get('image_size', 224)
     )
 
-    support_set = support_set.to(device)
-    query_set = query_set.to(device)
-    support_labels = support_labels.to(device)
-    query_labels = query_labels.to(device)
+    all_acc, all_f1, all_y_true, all_y_pred = [], [], [], []
 
-    print("[INFO] Computing prototypes and evaluating...")
-    with torch.no_grad():
-        support_embeddings = model(support_set)
-        query_embeddings = model(query_set)
+    print(f"[INFO] Evaluating {len(test_episodes)} test episodes...")
+    for idx, episode in enumerate(tqdm(test_episodes, desc="Testing Episodes")):
+        acc, f1, y_true, y_pred = evaluate_episode(model, device, episode)
+        all_acc.append(acc)
+        all_f1.append(f1)
+        all_y_true.extend(y_true)
+        all_y_pred.extend(y_pred)
 
-        prototypes = compute_prototypes(support_embeddings, support_labels)
-        predicted = predict_class(prototypes, query_embeddings)
+        log_gpu_memory()
+        if config['test'].get('verbose', False):
+            print(f"Episode {idx+1}: Acc = {acc:.2f}%, F1 = {f1:.2f}%")
 
-        acc = accuracy_score(query_labels.cpu(), predicted.cpu()) * 100
-        f1 = f1_score(query_labels.cpu(), predicted.cpu(), average='macro') * 100
+    # Final aggregated metrics
+    mean_acc = np.mean(all_acc)
+    std_acc = np.std(all_acc)
+    mean_f1 = np.mean(all_f1)
 
-    print(f"[RESULT] Accuracy: {acc:.2f}% | F1 Score: {f1:.2f}%")
-    print("[INFO] Classification Report:")
-    print(classification_report(query_labels.cpu(), predicted.cpu(), digits=4))
+    print("\n[RESULTS] Final Test Performance:")
+    print(f"Avg Accuracy: {mean_acc:.2f}% ± {std_acc:.2f}%")
+    print(f"Avg F1 Score: {mean_f1:.2f}%")
+    print("\n[INFO] Classification Report:")
+    print(classification_report(all_y_true, all_y_pred, digits=4))
+
+    # Save results
+    if 'results' in config and 'dir' in config['results']:
+        os.makedirs(config['results']['dir'], exist_ok=True)
+        output_path = os.path.join(config['results']['dir'], 'test_metrics.json')
+        with open(output_path, 'w') as f:
+            json.dump({
+                "mean_accuracy": mean_acc,
+                "std_accuracy": std_acc,
+                "mean_f1": mean_f1,
+                "classification_report": classification_report(
+                    all_y_true, all_y_pred, digits=4, output_dict=True
+                )
+            }, f, indent=4)
+        print(f"[SAVED] Results saved to {output_path}")
 
 
 if __name__ == "__main__":
