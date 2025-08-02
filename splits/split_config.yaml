@@ -1,0 +1,17 @@
+# Configuration for dynamic few-shot episode generation
+
+# Number of episodes to generate
+num_episodes: 600
+
+# Few-shot task configuration
+n_way: 5           # number of classes per episode
+k_shot: 5          # number of support samples per class
+n_query: 5         # number of query samples per class
+
+# Dataset source
+data_root: data/train   # folder with class-wise subdirectories
+split_mode: stratified  # options: random, stratified
+
+# Output
+output_path: splits/predefined/generated_5way_5shot.json
+seed: 42
