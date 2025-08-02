@@ -50,3 +50,8 @@ demo:
 inference:
   use_gpu: true
   confidence_threshold: 0.5
+  
+test:
+  checkpoint_path: models/checkpoints/protonet_best.pth
+  episode_json: splits/predefined/5way_1shot_episodes.json
+  verbose: false
